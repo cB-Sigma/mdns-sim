@@ -17,6 +17,7 @@ import (
 	"github.com/cB-Sigma/mdns-sim/sim"
 )
 
+// Covers: SIG-IPE-7352
 func TestRunner(t *testing.T) {
 	if testing.Short() {
 		t.Skip("uses multicast; skipped with -short")
@@ -55,6 +56,7 @@ func TestRunner(t *testing.T) {
 	}
 }
 
+// Covers: SIG-IPE-7352
 func TestRunnerFlags(t *testing.T) {
 	for _, args := range [][]string{{"-style", "shouting"}, {"-port", "70000"}, {"-ip", "nowhere"}, {"-iface", "no-such-if0"}, {"-bogus"}} {
 		if err := run(context.Background(), args, &bytes.Buffer{}, nil); err == nil {

@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.3.0 (2026-10-12)
+
+Needs github.com/cB-Sigma/mdns v0.3.0 for its tests. Added, backwards
+compatible: `Config.IPv6` (AAAA records), `Config.Subtypes`,
+`Config.ServiceTypes`, `Config.Domains`, `Config.Probe` with renaming and
+simultaneous-probe tie-breaking, `Device.Instance`; the command flags
+`-ip6`, `-subtypes`, `-types`, `-domains` and `-probe`; `// Covers:`
+requirement IDs on the tests added in v0.2.0.
+
 ## v0.2.0 (2026-10-11)
 
 For testing mdns v0.2.0. The API only grows; code written for v0.1 builds

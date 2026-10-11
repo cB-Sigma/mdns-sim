@@ -1,5 +1,5 @@
-github.com/cB-Sigma/mdns v0.2.0 h1:S4NbC4kNl00Ic8beB9SWmSEMD9dfivtfn/bBg5naGk0=
-github.com/cB-Sigma/mdns v0.2.0/go.mod h1:lmjUL/BgrrYEY6Xcg3R7jnXm/xkxLd5h42+1YIi0AZk=
+github.com/cB-Sigma/mdns v0.3.0 h1:UNVfghr6CmcbFw9e49SHNrAY63EpO7NQOCRPpOJT1Rg=
+github.com/cB-Sigma/mdns v0.3.0/go.mod h1:lmjUL/BgrrYEY6Xcg3R7jnXm/xkxLd5h42+1YIi0AZk=
 golang.org/x/net v0.59.0 h1:5zfYln+w5XCxwrnMMJPufRgNoXEaGxl0wo5GqPXyues=
 golang.org/x/net v0.59.0/go.mod h1:2DA/G1UfVbCpQPeWTmMPGY7Cs2PkBkwu743bVX5PIVg=
 golang.org/x/sys v0.48.0 h1:bbX/i/6MgT9BVLM9RT1thmxL04yeTAhbEz4SyadbXoo=

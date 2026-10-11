@@ -66,6 +66,11 @@ func run(ctx context.Context, args []string, out io.Writer, ready func([]*sim.De
 	repeat := fs.Duration("repeat", 0, "interval of the announce style's announcements (0: at start only)")
 	noTXT := fs.Bool("no-txt", false, "no TXT record")
 	nsec := fs.Bool("nsec", false, "answer questions for missing record types with NSEC")
+	ip6 := fs.String("ip6", "", "IPv6 address for an AAAA record (none by default)")
+	subtypes := fs.String("subtypes", "", "subtype labels, comma separated (_printer)")
+	types := fs.Bool("types", false, "answer the service type enumeration (_services._dns-sd._udp)")
+	domains := fs.String("domains", "", "browse domains to answer for b._dns-sd._udp, comma separated")
+	probe := fs.Bool("probe", false, "probe for the instance name first (multicast and announce styles)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -109,7 +114,8 @@ func run(ctx context.Context, args []string, out io.Writer, ready func([]*sim.De
 		}
 		d, err := sim.Start(ctx, sim.Config{Style: st, Type: *typ, Instance: fmt.Sprintf("%s (%s)", *instance, st), Host: *host + "-" + st.String(),
 			Port: *port, TXT: meta, IP: addr, TTL: *ttl, MDNSPort: *mport, Interface: ifi, Loopback: *loopback, Repeat: *repeat,
-			NoTXT: *noTXT, NSEC: *nsec})
+			NoTXT: *noTXT, NSEC: *nsec, IPv6: net.ParseIP(*ip6), Subtypes: list(*subtypes), ServiceTypes: *types,
+			Domains: list(*domains), Probe: *probe})
 		if err != nil {
 			return err
 		}
@@ -121,4 +127,15 @@ func run(ctx context.Context, args []string, out io.Writer, ready func([]*sim.De
 	}
 	<-ctx.Done()
 	return nil
+}
+
+// list splits a comma-separated flag value, dropping empty items.
+func list(s string) []string {
+	var out []string
+	for _, x := range strings.Split(s, ",") {
+		if x = strings.TrimSpace(x); x != "" {
+			out = append(out, x)
+		}
+	}
+	return out
 }

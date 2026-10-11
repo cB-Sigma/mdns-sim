@@ -25,6 +25,7 @@ import (
 // instance name with its own data after we have probed. The announcer
 // notices, probes again, meets the device's answers and renames itself
 // (RFC 6762 clause 9); a browse then finds both.
+// Covers: SIG-IPE-7344
 func TestLateConflictRenames(t *testing.T) {
 	port, ifi := testPort(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Second)
@@ -83,6 +84,7 @@ func TestLateConflictRenames(t *testing.T) {
 // TestBrowserStopsAskingOnNSEC: a device without a TXT record that says so
 // with NSEC is not asked for TXT again and again; one that stays silent
 // about it is (RFC 6762 clause 6.1). Both are found.
+// Covers: SIG-IPE-7340
 func TestBrowserStopsAskingOnNSEC(t *testing.T) {
 	port, ifi := testPort(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -113,6 +115,7 @@ func TestBrowserStopsAskingOnNSEC(t *testing.T) {
 // goodbye; once another host has asked for it twice without an answer, a
 // Watcher removes it after ten seconds instead of waiting for its TTL
 // (RFC 6762 clause 10.5).
+// Covers: SIG-IPE-7345
 func TestWatchDropsVanishedDevice(t *testing.T) {
 	port, ifi := testPort(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)

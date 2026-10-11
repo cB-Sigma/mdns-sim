@@ -55,6 +55,7 @@ func responses(c net.PacketConn, d time.Duration) []dnsmessage.Header {
 // port gets a unicast reply with its ID from the legacy device only; the
 // multicast device answers on the group; the announce-only device answers
 // nothing but announces.
+// Covers: SIG-IPE-7352
 func TestStyles(t *testing.T) {
 	if testing.Short() {
 		t.Skip("uses multicast; skipped with -short")
@@ -120,6 +121,7 @@ func TestStyles(t *testing.T) {
 // A device without TXT and with NSEC answers a TXT question with an NSEC
 // record listing only SRV, counts the question, and vanishes without a
 // goodbye.
+// Covers: SIG-IPE-7340
 func TestNSECAndVanish(t *testing.T) {
 	if testing.Short() {
 		t.Skip("uses multicast; skipped with -short")
@@ -195,6 +197,7 @@ func TestNSECAndVanish(t *testing.T) {
 	}
 }
 
+// Covers: SIG-IPE-7352
 func TestConfigChecks(t *testing.T) {
 	ifi := &net.Interface{Name: "x"}
 	for _, c := range []sim.Config{{}, {Style: sim.Legacy, Type: "_a._tcp", Instance: "i", Host: "h"}, {Style: 9, Interface: ifi}, {Style: sim.Legacy, Interface: ifi}} {

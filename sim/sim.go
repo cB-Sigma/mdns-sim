@@ -24,11 +24,15 @@
 // (Device.Announce: two Multicast devices with one instance name make a
 // conflict after probing, since neither probes) and disappear without a
 // goodbye (Device.Vanish). Device.Asked counts the questions it received
-// by type.
+// by type. It can also have an AAAA record, subtypes, answer the service
+// type and browse domain enumerations, and probe for its name with
+// renaming and tie-breaking (Config.IPv6, Subtypes, ServiceTypes, Domains,
+// Probe).
 //
 // The packets are built with golang.org/x/net/dns/dnsmessage, not with the
 // mdns package's own encoder, so the tests that use the simulator do not
-// only check that the package agrees with itself. IPv4 only.
+// only check that the package agrees with itself. The devices talk over
+// IPv4; Config.IPv6 adds an AAAA record.
 package sim
 
 import (
@@ -118,6 +122,25 @@ type Config struct {
 	// clause 6.1), and add that record to answers that leave the type
 	// out (no TXT with a PTR answer, no AAAA with an A record).
 	NSEC bool
+
+	// IPv6 is an address for an AAAA record beside the A record (the
+	// device still talks over IPv4).
+	IPv6 net.IP
+	// Subtypes are subtype labels ("_printer"); the device answers and
+	// announces a PTR for each "<sub>._sub.<type>" (RFC 6763 7.1).
+	Subtypes []string
+	// ServiceTypes makes the device answer the service type enumeration
+	// query (_services._dns-sd._udp, RFC 6763 9) with its type.
+	ServiceTypes bool
+	// Domains, when set, are answered for the browse domain enumeration
+	// query (b._dns-sd._udp.local., RFC 6763 11).
+	Domains []string
+	// Probe makes the Multicast and AnnounceOnly styles probe for the
+	// instance name before announcing (RFC 6762 8.1): three probes 250 ms
+	// apart; a response that holds the name renames the device to
+	// "<instance> (2)" and so on, and a simultaneous probe for the name
+	// that wins the tie-break (8.2) makes it wait a second and probe again.
+	Probe bool
 }
 
 // Device is a running simulated device.
@@ -130,6 +153,11 @@ type Device struct {
 
 	mu  sync.Mutex
 	txt map[string]string
+
+	nameMu   sync.Mutex
+	instance string // the instance label, renamed by probing
+	probing  atomic.Bool
+	probeHit chan probeHit
 
 	queries atomic.Int64
 	askMu   sync.Mutex
@@ -154,7 +182,8 @@ func Start(ctx context.Context, cfg Config) (*Device, error) {
 	if cfg.TTL <= 0 {
 		cfg.TTL = 120 * time.Second
 	}
-	d := &Device{cfg: cfg, port: cfg.MDNSPort, txt: cfg.TXT, asked: map[dnsmessage.Type]int{}, done: make(chan struct{})}
+	d := &Device{cfg: cfg, port: cfg.MDNSPort, txt: cfg.TXT, asked: map[dnsmessage.Type]int{}, done: make(chan struct{}),
+		instance: cfg.Instance, probeHit: make(chan probeHit, 16)}
 	if d.port == 0 {
 		d.port = 5353
 	}
@@ -192,6 +221,12 @@ func Start(ctx context.Context, cfg Config) (*Device, error) {
 	d.wg.Add(1)
 	go d.read()
 	if cfg.Style != Legacy {
+		if cfg.Probe {
+			if err := d.probe(ctx); err != nil {
+				_ = d.c.Close()
+				return nil, err
+			}
+		}
 		d.announce(false)
 	}
 	if cfg.Style == AnnounceOnly && cfg.Repeat > 0 {
@@ -275,7 +310,15 @@ func (d *Device) Close() error {
 }
 
 func (d *Device) typeName() string { return strings.TrimSuffix(d.cfg.Type, ".") + ".local." }
-func (d *Device) instName() string { return d.cfg.Instance + "." + d.typeName() }
+func (d *Device) instName() string { return d.Instance() + "." + d.typeName() }
+
+// Instance is the instance label the device holds (after any rename while
+// probing).
+func (d *Device) Instance() string {
+	d.nameMu.Lock()
+	defer d.nameMu.Unlock()
+	return d.instance
+}
 func (d *Device) hostName() string { return d.cfg.Host + ".local." }
 
 func (d *Device) read() {
@@ -293,6 +336,10 @@ func (d *Device) read() {
 				return
 			}
 			continue
+		}
+		if d.probing.Load() {
+			d.inspect(buf[:n])
+			continue // no answers while probing
 		}
 		if d.cfg.Style == AnnounceOnly {
 			continue
@@ -316,7 +363,9 @@ func (d *Device) handle(pkt []byte, src *net.UDPAddr) {
 	if err != nil {
 		return
 	}
-	ptr, srv, txt, a := false, false, false, false
+	ptr, srv, txt, a, aaaa, metaT := false, false, false, false, false, false
+	var subs []string
+	domains := false
 	nsecInst, nsecHost := false, false
 	hasTXT := !d.cfg.NoTXT
 	for _, q := range qs {
@@ -333,14 +382,40 @@ func (d *Device) handle(pkt []byte, src *net.UDPAddr) {
 		case name == strings.ToLower(d.hostName()):
 			d.ask(q.Type)
 			a = a || q.Type == dnsmessage.TypeA || q.Type == dnsmessage.TypeALL
-			nsecHost = nsecHost || d.cfg.NSEC && q.Type != dnsmessage.TypeA && q.Type != dnsmessage.TypeALL
+			aaaa = aaaa || d.cfg.IPv6 != nil && (q.Type == dnsmessage.TypeAAAA || q.Type == dnsmessage.TypeALL)
+			nsecHost = nsecHost || d.cfg.NSEC && q.Type != dnsmessage.TypeA && q.Type != dnsmessage.TypeALL && (q.Type != dnsmessage.TypeAAAA || d.cfg.IPv6 == nil)
+		case d.cfg.ServiceTypes && name == "_services._dns-sd._udp.local." && (q.Type == dnsmessage.TypePTR || q.Type == dnsmessage.TypeALL):
+			d.ask(q.Type)
+			metaT = true
+		case len(d.cfg.Domains) > 0 && name == "b._dns-sd._udp.local." && (q.Type == dnsmessage.TypePTR || q.Type == dnsmessage.TypeALL):
+			d.ask(q.Type)
+			domains = true
+		default:
+			for _, s := range d.cfg.Subtypes {
+				if name == strings.ToLower(d.subName(s)) && (q.Type == dnsmessage.TypePTR || q.Type == dnsmessage.TypeALL) {
+					d.ask(q.Type)
+					subs = append(subs, s)
+				}
+			}
 		}
 	}
-	if !ptr && !srv && !txt && !a && !nsecInst && !nsecHost {
+	if !ptr && !srv && !txt && !a && !aaaa && !nsecInst && !nsecHost && !metaT && !domains && len(subs) == 0 {
 		return
 	}
 	d.queries.Add(1)
 	var ans, add []func(*dnsmessage.Builder, uint32) error
+	if metaT {
+		ans = append(ans, d.metaRR)
+	}
+	if domains {
+		ans = append(ans, d.domainRRs)
+	}
+	for _, s := range subs {
+		ans = append(ans, d.subRR(s))
+	}
+	if len(subs) > 0 && !ptr {
+		add = append(add, d.srvRR, d.aRR)
+	}
 	if ptr {
 		ans = append(ans, d.ptrRR)
 		add = append(add, d.srvRR)
@@ -350,6 +425,9 @@ func (d *Device) handle(pkt []byte, src *net.UDPAddr) {
 			add = append(add, d.nsecInstRR)
 		}
 		add = append(add, d.aRR)
+		if d.cfg.IPv6 != nil {
+			add = append(add, d.aaaaRR)
+		}
 		if d.cfg.NSEC {
 			add = append(add, d.nsecHostRR)
 		}
@@ -365,6 +443,9 @@ func (d *Device) handle(pkt []byte, src *net.UDPAddr) {
 	}
 	if a {
 		ans = append(ans, d.aRR)
+	}
+	if aaaa {
+		ans = append(ans, d.aaaaRR)
 	}
 	if nsecHost {
 		ans = append(ans, d.nsecHostRR)
@@ -402,6 +483,12 @@ func (d *Device) announce(goodbye bool) {
 		recs = append(recs, d.txtRR)
 	}
 	recs = append(recs, d.aRR)
+	if d.cfg.IPv6 != nil {
+		recs = append(recs, d.aaaaRR)
+	}
+	for _, s := range d.cfg.Subtypes {
+		recs = append(recs, d.subRR(s))
+	}
 	b, err := d.build(dnsmessage.Header{Response: true, Authoritative: true}, nil, recs, nil, goodbye)
 	if err != nil {
 		return
@@ -519,7 +606,11 @@ func (d *Device) nsecInstRR(b *dnsmessage.Builder, ttl uint32) error {
 }
 
 func (d *Device) nsecHostRR(b *dnsmessage.Builder, ttl uint32) error {
-	return d.nsecRR(b, ttl, d.hostName(), []uint16{uint16(dnsmessage.TypeA)})
+	types := []uint16{uint16(dnsmessage.TypeA)}
+	if d.cfg.IPv6 != nil {
+		types = append(types, uint16(dnsmessage.TypeAAAA))
+	}
+	return d.nsecRR(b, ttl, d.hostName(), types)
 }
 
 // nsecRR writes an NSEC record in the restricted form of RFC 6762 clause

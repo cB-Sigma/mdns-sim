@@ -34,7 +34,15 @@ Any style can also:
 | `Device.Vanish` | stops without a goodbye | passive observation of failures, reconfirmation |
 | `Device.Asked` | counts the questions received, by type | what a browser asks for |
 
-Not simulated: IPv6, AAAA records, probing, subtypes.
+| `Config.IPv6` | an AAAA record beside the A record (answered, announced, in additionals; NSEC lists it) | browsers that collect IPv6 addresses |
+| `Config.Subtypes` | subtype PTRs (RFC 6763 7.1), answered and announced | subtype browsing |
+| `Config.ServiceTypes` | answers the service type enumeration (RFC 6763 9) | type enumeration |
+| `Config.Domains` | answers the browse domain enumeration (RFC 6763 11) | domain enumeration |
+| `Config.Probe` | probes for the instance name before announcing (RFC 6762 8.1), renames to "<name> (2)" on a conflict, and waits a second after losing a simultaneous-probe tie-break (8.2); `Device.Instance` | responders that defend a name, tie-breaking |
+
+Not simulated: the IPv6 transport (devices talk over IPv4; the mdns
+module's interop tests run IPv6-only networks against python-zeroconf),
+truncated known-answer trains and rate limits as a peer.
 
 ## Install
 
@@ -65,6 +73,11 @@ Requires Go 1.27.1 or later.
 | `-repeat` | `0` | interval of the `announce` style's announcements (0: at start only) |
 | `-no-txt` | false | no TXT record |
 | `-nsec` | false | answer questions for missing record types with NSEC |
+| `-ip6` | none | IPv6 address for an AAAA record |
+| `-subtypes` | none | subtype labels, comma separated |
+| `-types` | false | answer the service type enumeration |
+| `-domains` | none | browse domains to answer, comma separated |
+| `-probe` | false | probe for the instance name first (multicast and announce styles) |
 
 On port 5353, next to the operating system's responder, and then browse
 with the system tools:
@@ -134,8 +147,7 @@ sim/rfc6762_integration_test.go its v0.2.0 tests (a conflict after
 probing, NSEC, a device that vanishes); they live here so the library
 does not depend on its simulator. Tests carry `// Covers: SIG-...`
 comments: these are requirement IDs of the SigmaM2M project's compliance
-report and have no meaning outside it. The tests added in v0.2.0 carry
-none yet.
+report and have no meaning outside it.
 
 ## Demo values
 
