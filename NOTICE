@@ -1,0 +1,16 @@
+mdns-sim (simulated multicast DNS / DNS-SD devices, in Go)
+Copyright 2026 Abhinav Gautam
+
+This module is licensed under the Apache License, Version 2.0 (LICENSE).
+
+The code was written for SigmaM2M from the IETF RFCs listed in
+PROVENANCE.md. It contains no code from other projects. internal/reuse is
+a copy of the same author's code in the mdns module.
+
+Dependencies
+------------
+
+github.com/cB-Sigma/mdns    Apache-2.0, Copyright 2026 Abhinav Gautam (tests only)
+golang.org/x/net            BSD-3-Clause, Copyright The Go Authors (DNS messages, IPv4 multicast)
+golang.org/x/sys            BSD-3-Clause, Copyright The Go Authors (SO_REUSEPORT)
+The Go standard library: BSD-3-Clause, Copyright The Go Authors.
