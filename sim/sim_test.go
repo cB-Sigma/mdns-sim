@@ -117,6 +117,84 @@ func TestStyles(t *testing.T) {
 	}
 }
 
+// A device without TXT and with NSEC answers a TXT question with an NSEC
+// record listing only SRV, counts the question, and vanishes without a
+// goodbye.
+func TestNSECAndVanish(t *testing.T) {
+	if testing.Short() {
+		t.Skip("uses multicast; skipped with -short")
+	}
+	port := 20000 + rand.IntN(30000)
+	ifi, err := mdns.TestInterface(port)
+	if err != nil {
+		t.Skip(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	lc := net.ListenConfig{Control: reuse.Control}
+	gc, err := lc.ListenPacket(ctx, "udp4", "0.0.0.0:"+strconv.Itoa(port))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer gc.Close()
+	gp := ipv4.NewPacketConn(gc)
+	if err := gp.JoinGroup(ifi, &net.UDPAddr{IP: group}); err != nil {
+		t.Fatal(err)
+	}
+	_ = gp.SetMulticastInterface(ifi)
+	_ = gp.SetMulticastLoopback(true)
+	d, err := sim.Start(ctx, sim.Config{Style: sim.Multicast, Type: "_ns._tcp", Instance: "dev", Host: "dev", Port: 1, MDNSPort: port, Interface: ifi, Loopback: true, NoTXT: true, NSEC: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	responses(gc, 200*time.Millisecond) // the announcement
+	b := dnsmessage.NewBuilder(nil, dnsmessage.Header{})
+	_ = b.StartQuestions()
+	_ = b.Question(dnsmessage.Question{Name: dnsmessage.MustNewName("dev._ns._tcp.local."), Type: dnsmessage.TypeTXT, Class: dnsmessage.ClassINET})
+	q, _ := b.Finish()
+	if _, err := gp.WriteTo(q, nil, &net.UDPAddr{IP: group, Port: port}); err != nil {
+		t.Fatal(err)
+	}
+	_ = gc.SetReadDeadline(time.Now().Add(time.Second))
+	buf := make([]byte, 9000)
+	found := false
+	for !found {
+		n, _, err := gc.ReadFrom(buf)
+		if err != nil {
+			break
+		}
+		var p dnsmessage.Parser
+		if h, err := p.Start(buf[:n]); err != nil || !h.Response {
+			continue
+		}
+		_ = p.SkipAllQuestions()
+		ans, _ := p.AllAnswers()
+		for _, r := range ans {
+			if u, ok := r.Body.(*dnsmessage.UnknownResource); ok && r.Header.Type == 47 {
+				// Next name, then window 0, length 5, bit for SRV (33).
+				want := append([]byte("\x03dev\x03_ns\x04_tcp\x05local\x00"), 0, 5, 0, 0, 0, 0, 0x40)
+				if string(u.Data) != string(want) {
+					t.Fatalf("NSEC rdata % x", u.Data)
+				}
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Fatal("no NSEC answer")
+	}
+	if d.Asked(dnsmessage.TypeTXT) != 1 {
+		t.Fatalf("asked %d", d.Asked(dnsmessage.TypeTXT))
+	}
+	if err := d.Vanish(); err != nil {
+		t.Fatal(err)
+	}
+	if got := responses(gc, 300*time.Millisecond); len(got) != 0 {
+		t.Fatalf("vanished device sent %d responses", len(got))
+	}
+}
+
 func TestConfigChecks(t *testing.T) {
 	ifi := &net.Interface{Name: "x"}
 	for _, c := range []sim.Config{{}, {Style: sim.Legacy, Type: "_a._tcp", Instance: "i", Host: "h"}, {Style: 9, Interface: ifi}, {Style: sim.Legacy, Interface: ifi}} {

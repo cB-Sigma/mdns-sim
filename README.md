@@ -24,7 +24,17 @@ A browser that queries only from the mDNS port misses `Legacy` where the
 operating system's responder also holds port 5353; one that sends only
 one-shot queries from an ephemeral port never hears `Multicast`.
 
-Not simulated: IPv6, AAAA records, probing and conflicts, subtypes.
+Any style can also:
+
+| Config or method | Does | Tests with it |
+|---|---|---|
+| `Config.NoTXT` | no TXT record at all | browsers that wait for a TXT record |
+| `Config.NSEC` | answers questions for the types it lacks with NSEC (RFC 6762 clause 6.1), and adds that NSEC to PTR answers | browsers that read NSEC |
+| `Device.Announce` | multicasts every record now, without probing | a conflict after probing: a `Multicast` device with the same instance name as a running responder |
+| `Device.Vanish` | stops without a goodbye | passive observation of failures, reconfirmation |
+| `Device.Asked` | counts the questions received, by type | what a browser asks for |
+
+Not simulated: IPv6, AAAA records, probing, subtypes.
 
 ## Install
 
@@ -53,6 +63,8 @@ Requires Go 1.27.1 or later.
 | `-loopback` | false | multicast loopback, so a browser on this host hears the devices; allows the loopback interface |
 | `-ttl` | `2m0s` | TTL of every record |
 | `-repeat` | `0` | interval of the `announce` style's announcements (0: at start only) |
+| `-no-txt` | false | no TXT record |
+| `-nsec` | false | answer questions for missing record types with NSEC |
 
 On port 5353, next to the operating system's responder, and then browse
 with the system tools:
@@ -117,10 +129,13 @@ go test -race ./...
 
 The tests use multicast on a random port and skip when no interface loops
 multicast back to the host, or with `-short`. sim/browse_integration_test.go
-holds the mdns module's browse and watch tests against each style; they
-live here so the library does not depend on its simulator. Tests carry
-`// Covers: SIG-...` comments: these are requirement IDs of the SigmaM2M
-project's compliance report and have no meaning outside it.
+holds the mdns module's browse and watch tests against each style, and
+sim/rfc6762_integration_test.go its v0.2.0 tests (a conflict after
+probing, NSEC, a device that vanishes); they live here so the library
+does not depend on its simulator. Tests carry `// Covers: SIG-...`
+comments: these are requirement IDs of the SigmaM2M project's compliance
+report and have no meaning outside it. The tests added in v0.2.0 carry
+none yet.
 
 ## Demo values
 

@@ -19,6 +19,13 @@
 //     start, every Repeat and after SetTXT, and a goodbye on Close (a
 //     device that reports state changes in its TXT record).
 //
+// A device can also lack a TXT record (Config.NoTXT), answer with NSEC
+// records for the types it lacks (Config.NSEC), announce again on demand
+// (Device.Announce: two Multicast devices with one instance name make a
+// conflict after probing, since neither probes) and disappear without a
+// goodbye (Device.Vanish). Device.Asked counts the questions it received
+// by type.
+//
 // The packets are built with golang.org/x/net/dns/dnsmessage, not with the
 // mdns package's own encoder, so the tests that use the simulator do not
 // only check that the package agrees with itself. IPv4 only.
@@ -104,6 +111,13 @@ type Config struct {
 	// Repeat is the interval of the AnnounceOnly style's announcements;
 	// only at start (and after SetTXT) when zero.
 	Repeat time.Duration
+	// NoTXT gives the device no TXT record at all.
+	NoTXT bool
+	// NSEC makes the device answer questions for its instance and host
+	// names about types it does not have with an NSEC record (RFC 6762
+	// clause 6.1), and add that record to answers that leave the type
+	// out (no TXT with a PTR answer, no AAAA with an A record).
+	NSEC bool
 }
 
 // Device is a running simulated device.
@@ -118,6 +132,9 @@ type Device struct {
 	txt map[string]string
 
 	queries atomic.Int64
+	askMu   sync.Mutex
+	asked   map[dnsmessage.Type]int
+	silent  atomic.Bool
 	done    chan struct{}
 	wg      sync.WaitGroup
 	once    sync.Once
@@ -137,7 +154,7 @@ func Start(ctx context.Context, cfg Config) (*Device, error) {
 	if cfg.TTL <= 0 {
 		cfg.TTL = 120 * time.Second
 	}
-	d := &Device{cfg: cfg, port: cfg.MDNSPort, txt: cfg.TXT, done: make(chan struct{})}
+	d := &Device{cfg: cfg, port: cfg.MDNSPort, txt: cfg.TXT, asked: map[dnsmessage.Type]int{}, done: make(chan struct{})}
 	if d.port == 0 {
 		d.port = 5353
 	}
@@ -208,6 +225,30 @@ func Start(ctx context.Context, cfg Config) (*Device, error) {
 // Queries is the number of queries for the device's names it has answered.
 func (d *Device) Queries() int { return int(d.queries.Load()) }
 
+// Asked is the number of questions of type t for the device's names
+// (service type, instance or host) it has received.
+func (d *Device) Asked(t dnsmessage.Type) int {
+	d.askMu.Lock()
+	defer d.askMu.Unlock()
+	return d.asked[t]
+}
+
+// Announce multicasts every record now (not for the Legacy style). Two
+// Multicast devices with the same instance name started one after the
+// other make a late conflict: neither probes.
+func (d *Device) Announce() {
+	if d.cfg.Style != Legacy && !d.silent.Load() {
+		d.announce(false)
+	}
+}
+
+// Vanish stops the device without a goodbye, like a device that loses
+// power: caches keep its records until they expire or are found stale.
+func (d *Device) Vanish() error {
+	d.silent.Store(true)
+	return d.Close()
+}
+
 // SetTXT changes the TXT metadata; the Multicast and AnnounceOnly styles
 // announce the change at once.
 func (d *Device) SetTXT(txt map[string]string) {
@@ -223,7 +264,7 @@ func (d *Device) SetTXT(txt map[string]string) {
 func (d *Device) Close() error {
 	var err error
 	d.once.Do(func() {
-		if d.cfg.Style != Legacy {
+		if d.cfg.Style != Legacy && !d.silent.Load() {
 			d.announce(true)
 		}
 		close(d.done)
@@ -276,26 +317,42 @@ func (d *Device) handle(pkt []byte, src *net.UDPAddr) {
 		return
 	}
 	ptr, srv, txt, a := false, false, false, false
+	nsecInst, nsecHost := false, false
+	hasTXT := !d.cfg.NoTXT
 	for _, q := range qs {
 		name := strings.ToLower(q.Name.String())
 		switch {
-		case name == strings.ToLower(d.typeName()) && (q.Type == dnsmessage.TypePTR || q.Type == dnsmessage.TypeALL):
-			ptr = true
+		case name == strings.ToLower(d.typeName()):
+			d.ask(q.Type)
+			ptr = ptr || q.Type == dnsmessage.TypePTR || q.Type == dnsmessage.TypeALL
 		case name == strings.ToLower(d.instName()):
+			d.ask(q.Type)
 			srv = srv || q.Type == dnsmessage.TypeSRV || q.Type == dnsmessage.TypeALL
-			txt = txt || q.Type == dnsmessage.TypeTXT || q.Type == dnsmessage.TypeALL
+			txt = txt || hasTXT && (q.Type == dnsmessage.TypeTXT || q.Type == dnsmessage.TypeALL)
+			nsecInst = nsecInst || d.cfg.NSEC && q.Type != dnsmessage.TypeSRV && q.Type != dnsmessage.TypeALL && (q.Type != dnsmessage.TypeTXT || !hasTXT)
 		case name == strings.ToLower(d.hostName()):
+			d.ask(q.Type)
 			a = a || q.Type == dnsmessage.TypeA || q.Type == dnsmessage.TypeALL
+			nsecHost = nsecHost || d.cfg.NSEC && q.Type != dnsmessage.TypeA && q.Type != dnsmessage.TypeALL
 		}
 	}
-	if !ptr && !srv && !txt && !a {
+	if !ptr && !srv && !txt && !a && !nsecInst && !nsecHost {
 		return
 	}
 	d.queries.Add(1)
 	var ans, add []func(*dnsmessage.Builder, uint32) error
 	if ptr {
 		ans = append(ans, d.ptrRR)
-		add = append(add, d.srvRR, d.txtRR, d.aRR)
+		add = append(add, d.srvRR)
+		if hasTXT {
+			add = append(add, d.txtRR)
+		} else if d.cfg.NSEC {
+			add = append(add, d.nsecInstRR)
+		}
+		add = append(add, d.aRR)
+		if d.cfg.NSEC {
+			add = append(add, d.nsecHostRR)
+		}
 	}
 	if srv {
 		ans = append(ans, d.srvRR)
@@ -303,8 +360,14 @@ func (d *Device) handle(pkt []byte, src *net.UDPAddr) {
 	if txt {
 		ans = append(ans, d.txtRR)
 	}
+	if nsecInst {
+		ans = append(ans, d.nsecInstRR)
+	}
 	if a {
 		ans = append(ans, d.aRR)
+	}
+	if nsecHost {
+		ans = append(ans, d.nsecHostRR)
 	}
 	hdr := dnsmessage.Header{Response: true, Authoritative: true}
 	var echo []dnsmessage.Question
@@ -326,10 +389,20 @@ func (d *Device) handle(pkt []byte, src *net.UDPAddr) {
 	_, _ = d.p.WriteTo(b, nil, &net.UDPAddr{IP: group, Port: d.port})
 }
 
+func (d *Device) ask(t dnsmessage.Type) {
+	d.askMu.Lock()
+	d.asked[t]++
+	d.askMu.Unlock()
+}
+
 // announce multicasts every record (goodbye: with TTL 0).
 func (d *Device) announce(goodbye bool) {
-	b, err := d.build(dnsmessage.Header{Response: true, Authoritative: true}, nil,
-		[]func(*dnsmessage.Builder, uint32) error{d.ptrRR, d.srvRR, d.txtRR, d.aRR}, nil, goodbye)
+	recs := []func(*dnsmessage.Builder, uint32) error{d.ptrRR, d.srvRR}
+	if !d.cfg.NoTXT {
+		recs = append(recs, d.txtRR)
+	}
+	recs = append(recs, d.aRR)
+	b, err := d.build(dnsmessage.Header{Response: true, Authoritative: true}, nil, recs, nil, goodbye)
 	if err != nil {
 		return
 	}
@@ -433,6 +506,45 @@ func (d *Device) aRR(b *dnsmessage.Builder, ttl uint32) error {
 	var a [4]byte
 	copy(a[:], d.ip)
 	return b.AResource(h, dnsmessage.AResource{A: a})
+}
+
+// nsecInstRR says the instance has an SRV record and, unless NoTXT, a TXT
+// record; nsecHostRR says the host has only an A record.
+func (d *Device) nsecInstRR(b *dnsmessage.Builder, ttl uint32) error {
+	types := []uint16{uint16(dnsmessage.TypeSRV)}
+	if !d.cfg.NoTXT {
+		types = append(types, uint16(dnsmessage.TypeTXT))
+	}
+	return d.nsecRR(b, ttl, d.instName(), types)
+}
+
+func (d *Device) nsecHostRR(b *dnsmessage.Builder, ttl uint32) error {
+	return d.nsecRR(b, ttl, d.hostName(), []uint16{uint16(dnsmessage.TypeA)})
+}
+
+// nsecRR writes an NSEC record in the restricted form of RFC 6762 clause
+// 6.1: the next domain name is the record's own name, written out, and
+// one bitmap window covers types below 256.
+func (d *Device) nsecRR(b *dnsmessage.Builder, ttl uint32, name string, types []uint16) error {
+	h, err := d.hdr(name, ttl, true)
+	if err != nil {
+		return err
+	}
+	var data []byte
+	for _, l := range strings.Split(strings.TrimSuffix(name, "."), ".") {
+		data = append(data, byte(len(l)))
+		data = append(data, l...)
+	}
+	data = append(data, 0)
+	var bits [32]byte
+	n := 0
+	for _, t := range types {
+		bits[t/8] |= 0x80 >> (t % 8)
+		n = max(n, int(t/8)+1)
+	}
+	data = append(data, 0, byte(n))
+	data = append(data, bits[:n]...)
+	return b.UnknownResource(h, dnsmessage.UnknownResource{Type: 47, Data: data})
 }
 
 // DefaultInterface picks an interface for a device: the first one that is

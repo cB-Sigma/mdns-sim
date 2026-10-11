@@ -64,6 +64,8 @@ func run(ctx context.Context, args []string, out io.Writer, ready func([]*sim.De
 	loopback := fs.Bool("loopback", false, "multicast loopback, so a browser on this host hears the devices; allows the loopback interface")
 	ttl := fs.Duration("ttl", 120*time.Second, "TTL of every record")
 	repeat := fs.Duration("repeat", 0, "interval of the announce style's announcements (0: at start only)")
+	noTXT := fs.Bool("no-txt", false, "no TXT record")
+	nsec := fs.Bool("nsec", false, "answer questions for missing record types with NSEC")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -106,7 +108,8 @@ func run(ctx context.Context, args []string, out io.Writer, ready func([]*sim.De
 			return err
 		}
 		d, err := sim.Start(ctx, sim.Config{Style: st, Type: *typ, Instance: fmt.Sprintf("%s (%s)", *instance, st), Host: *host + "-" + st.String(),
-			Port: *port, TXT: meta, IP: addr, TTL: *ttl, MDNSPort: *mport, Interface: ifi, Loopback: *loopback, Repeat: *repeat})
+			Port: *port, TXT: meta, IP: addr, TTL: *ttl, MDNSPort: *mport, Interface: ifi, Loopback: *loopback, Repeat: *repeat,
+			NoTXT: *noTXT, NSEC: *nsec})
 		if err != nil {
 			return err
 		}
